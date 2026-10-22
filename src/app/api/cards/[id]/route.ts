@@ -1,0 +1,369 @@
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import {
+  decryptAttendeeSensitiveFields,
+  encryptAttendeeSensitiveFields,
+} from "@/lib/security/attendee-sensitive";
+import { logSecurityEvent } from "@/lib/security/telemetry";
+import { queryNeon, queryNeonAsSystem, queryNeonOne, queryNeonOneAsSystem, runWithRlsBypassAsync } from "@/lib/neon-db";
+import { deleteAttendeeForTenant, updateAttendeeForTenant } from "@/lib/db/tenant-mutations";
+import { getServerUserIdFromCookies } from "@/lib/auth-server";
+import { getServerAuthSession } from "@/auth";
+import { isValidUuid } from "@/lib/validation/uuid";
+import { verifyAttendeeCardToken } from "@/lib/security/tokens";
+import { validateAttendeeCoreFields } from "@/lib/validation/attendee-fields";
+import { isApprovedGuestCard } from "@/lib/services/registration.service";
+import { resolveOrgTenantIdForUser } from "@/lib/tenant/resolve";
+import { apiRouteErrorResponse, withApiTenantContext } from "@/lib/tenant/api-context";
+import {
+  validateAndNormalizeLinkedInUrl,
+  validateAndNormalizeSocialUrl,
+} from "@/lib/validation/social-urls";
+import type { SocialPlatform, AttendeeSocialLinks } from "@/types/card";
+
+const APPROVED_GUEST_LOCKED_FIELDS = ["name", "company", "card_email"] as const;
+
+function preserveApprovedGuestIdentityFields(
+  updatePayload: Record<string, unknown>,
+  existing: Record<string, unknown>,
+) {
+  const next = { ...updatePayload };
+  for (const field of APPROVED_GUEST_LOCKED_FIELDS) {
+    if (field in next) {
+      next[field] = existing[field];
+    }
+  }
+  return next;
+}
+
+function stripBrandingMutations(payload: Record<string, unknown>) {
+  const sanitized = { ...payload };
+  delete sanitized.card_color;
+  delete sanitized.card_font;
+  delete sanitized.design_type;
+  const customFieldsRaw = sanitized.custom_fields;
+  if (
+    customFieldsRaw &&
+    typeof customFieldsRaw === "object" &&
+    !Array.isArray(customFieldsRaw)
+  ) {
+    const nextCustomFields = { ...(customFieldsRaw as Record<string, unknown>) };
+    delete nextCustomFields.__horizontal_text_color;
+    delete nextCustomFields.__vertical_text_color;
+    sanitized.custom_fields = nextCustomFields;
+  }
+  return sanitized;
+}
+
+async function getAuthedSessionAndPermission(
+  req: Request,
+  id: string,
+  mode: "read" | "edit" | "delete" = "read",
+) {
+  const authHeader = req.headers.get("authorization") || "";
+  const bearerToken = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+  if (bearerToken && mode !== "delete") {
+    try {
+      const verified = await verifyAttendeeCardToken(bearerToken);
+      const tokenCardId = String(verified.payload.cardId || "").trim();
+      const tokenScope = String(verified.payload.scope || "").trim();
+      const hasReadScope = tokenScope.includes("card:read");
+      const hasEditScope = tokenScope.includes("card:edit");
+      const tokenCanRead = hasReadScope || hasEditScope;
+      const tokenCanEdit = hasEditScope;
+      const tokenAllowed = mode === "read" ? tokenCanRead : tokenCanEdit;
+      if (tokenCardId === id && tokenAllowed) {
+        return {
+          userId: String(verified.payload.sub || "").trim() || "token-user",
+          tokenAccess: true as const,
+          isCardOwner: true,
+          isEventOrganizerOrStaff: false,
+          tenantId: undefined,
+        };
+      }
+    } catch {
+      // Fall through to normal session checks.
+    }
+  }
+
+  const cookieStore = await cookies();
+  const userId = await getServerUserIdFromCookies(cookieStore);
+  if (!userId) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+
+  const attendee = await queryNeonOneAsSystem<Record<string, unknown>>(
+    `SELECT * FROM public.attendees WHERE id = $1`,
+    [id],
+  );
+  const fetchError = attendee ? null : { message: "Not found" };
+
+  if (fetchError || !attendee) {
+    return { error: NextResponse.json({ error: "Attendee not found" }, { status: 404 }) };
+  }
+
+  const { row: secureAttendee } = decryptAttendeeSensitiveFields(attendee);
+  const session = await getServerAuthSession();
+  const sessionEmail = String(session?.user?.email || "").trim().toLowerCase();
+  const attendeeEmail = String(secureAttendee.card_email || "").trim().toLowerCase();
+
+  const isCardOwner = Boolean(
+    (attendee.user_id && String(attendee.user_id).trim() === userId) ||
+    (sessionEmail && attendeeEmail && attendeeEmail === sessionEmail)
+  );
+
+  let isEventOrganizerOrStaff = false;
+  let hasDeletePermission = false;
+
+  const eventId = String(attendee.event_id || "").trim();
+  if (eventId) {
+    const event = await queryNeonOneAsSystem<{ user_id: string | null }>(
+      `SELECT user_id FROM public.events WHERE id = $1`,
+      [eventId],
+    );
+    if (event?.user_id === userId) {
+      isEventOrganizerOrStaff = true;
+      hasDeletePermission = true;
+    } else {
+      const membership = await queryNeonOneAsSystem<{ id: string }>(
+        `SELECT id
+         FROM public.organization_members
+         WHERE member_user_id = $1
+           AND org_owner_user_id = $2
+           AND status = 'active'
+         LIMIT 1`,
+        [userId, String(event?.user_id || "")],
+      );
+      if (membership?.id) {
+        const grants = await queryNeonAsSystem<{ permission: string }>(
+          `SELECT permission
+           FROM public.access_grants
+           WHERE event_id = $1
+             AND grantee_user_id = $2
+             AND status = 'active'`,
+          [eventId, userId],
+        );
+        const permissions = new Set(grants.map((g) => String(g.permission || "")));
+        if (permissions.has("manage_event") || permissions.has("edit_cards")) {
+          isEventOrganizerOrStaff = true;
+        }
+        if (permissions.has("manage_event") || permissions.has("delete_cards")) {
+          hasDeletePermission = true;
+        }
+      }
+    }
+  }
+
+  const adminEmails = (process.env.ADMIN_EMAILS || process.env.ADMIN_EMAIL || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+  const role = String(session?.user?.role || "").toLowerCase();
+  const isAdmin = role === "admin" || Boolean(sessionEmail && adminEmails.includes(sessionEmail));
+  if (isAdmin) {
+    isEventOrganizerOrStaff = true;
+    hasDeletePermission = true;
+  }
+
+  let allowed = false;
+  if (mode === "delete") {
+    allowed = hasDeletePermission;
+  } else if (mode === "edit") {
+    allowed = isCardOwner || isEventOrganizerOrStaff;
+  } else {
+    // mode === "read"
+    allowed = isCardOwner || isEventOrganizerOrStaff;
+  }
+
+  if (!allowed) {
+    return { error: NextResponse.json({ error: "Forbidden: You do not have permission to edit this card" }, { status: 403 }) };
+  }
+
+  return {
+    userId,
+    tokenAccess: false as const,
+    isCardOwner,
+    isEventOrganizerOrStaff,
+    tenantId: isEventOrganizerOrStaff ? await resolveOrgTenantIdForUser(userId) : undefined,
+  };
+}
+
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    if (!isValidUuid(id)) return NextResponse.json({ error: "Invalid card id" }, { status: 400 });
+    const auth = await getAuthedSessionAndPermission(_, id, "read");
+    if (auth.error) return auth.error;
+
+    const loadCard = async () => {
+      const attendee = await queryNeonOne<Record<string, unknown>>(
+        `SELECT * FROM public.attendees WHERE id = $1`,
+        [id],
+      );
+      const error = attendee ? null : { message: "Not found" };
+      if (error || !attendee) {
+        return NextResponse.json({ error: "Attendee not found" }, { status: 404 });
+      }
+
+      const { row: secureRecord, migrationPatch } = decryptAttendeeSensitiveFields(attendee);
+      if (Object.keys(migrationPatch).length > 0) {
+        if (auth.tenantId) {
+          await updateAttendeeForTenant(id, auth.tenantId, migrationPatch, "id");
+        } else {
+          await runWithRlsBypassAsync(async () => {
+            const { updateRows } = await import("@/lib/neon-db");
+            await updateRows("attendees", migrationPatch, { id }, "id");
+          });
+        }
+      }
+
+      const identityLocked = await isApprovedGuestCard(id);
+      return NextResponse.json({
+        data: secureRecord,
+        identityLocked,
+        canCustomizeBranding: Boolean(auth.isEventOrganizerOrStaff),
+      });
+    };
+
+    if (auth.tokenAccess || (auth.isCardOwner && !auth.isEventOrganizerOrStaff)) {
+      return runWithRlsBypassAsync(loadCard);
+    }
+
+    const cookieStore = await cookies();
+    return withApiTenantContext(cookieStore, loadCard);
+  } catch (err: unknown) {
+    return apiRouteErrorResponse(err, "Internal Server Error");
+  }
+}
+
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    if (!isValidUuid(id)) return NextResponse.json({ error: "Invalid card id" }, { status: 400 });
+    const updatePayload = (await req.json()) as Record<string, unknown>;
+    const validation = validateAttendeeCoreFields(updatePayload);
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
+
+    if (typeof updatePayload.linkedin === "string" && updatePayload.linkedin.trim()) {
+      const liResult = validateAndNormalizeLinkedInUrl(updatePayload.linkedin);
+      if (!liResult.valid) {
+        return NextResponse.json({ error: liResult.error || "Invalid LinkedIn URL" }, { status: 400 });
+      }
+      (validation.payload as Record<string, unknown>).linkedin = liResult.normalizedUrl;
+    }
+
+    if (updatePayload.social_links && typeof updatePayload.social_links === "object") {
+      const rawSocials = updatePayload.social_links as Record<string, unknown>;
+      const validatedSocials: AttendeeSocialLinks = {};
+      for (const [platform, url] of Object.entries(rawSocials)) {
+        if (typeof url === "string" && url.trim()) {
+          const res = validateAndNormalizeSocialUrl(platform as SocialPlatform, url);
+          if (!res.valid) {
+            return NextResponse.json({ error: res.error || `Invalid ${platform} URL` }, { status: 400 });
+          }
+          if (res.normalizedUrl) {
+            validatedSocials[platform as SocialPlatform] = res.normalizedUrl;
+          }
+        }
+      }
+      const existingCustom = (validation.payload as Record<string, unknown>).custom_fields;
+      const customFields =
+        existingCustom && typeof existingCustom === "object" && !Array.isArray(existingCustom)
+          ? { ...(existingCustom as Record<string, unknown>) }
+          : {};
+      customFields.social_links = validatedSocials;
+      (validation.payload as Record<string, unknown>).custom_fields = customFields;
+      delete (validation.payload as Record<string, unknown>).social_links;
+    }
+
+    const auth = await getAuthedSessionAndPermission(req, id, "edit");
+    if (auth.error) return auth.error;
+    const userId = auth.userId!;
+
+    const applyPatch = async () => {
+      const existingAttendee = await queryNeonOne<Record<string, unknown>>(
+        `SELECT * FROM public.attendees WHERE id = $1`,
+        [id],
+      );
+      if (!existingAttendee) {
+        return NextResponse.json({ error: "Attendee not found" }, { status: 404 });
+      }
+      const { row: existingSecure } = decryptAttendeeSensitiveFields(existingAttendee);
+
+      let permittedPayload = !auth.isEventOrganizerOrStaff
+        ? stripBrandingMutations(validation.payload as Record<string, unknown>)
+        : (validation.payload as Record<string, unknown>);
+
+      if (await isApprovedGuestCard(id)) {
+        permittedPayload = preserveApprovedGuestIdentityFields(permittedPayload, existingSecure);
+      }
+
+      const securedPayload = encryptAttendeeSensitiveFields(permittedPayload);
+      const data = auth.tenantId && auth.isEventOrganizerOrStaff
+        ? await updateAttendeeForTenant(id, auth.tenantId, securedPayload)
+        : await (async () => {
+            const { updateRows } = await import("@/lib/neon-db");
+            return updateRows("attendees", securedPayload, { id });
+          })();
+      const updateError = data.length ? null : { message: "No row updated" };
+
+      if (updateError) {
+        logSecurityEvent({
+          event: "security.attendees.api_patch_failed",
+          level: "error",
+          actorId: userId,
+          resourceId: id,
+          details: { reason: updateError.message },
+        });
+        return NextResponse.json({ error: updateError.message }, { status: 400 });
+      }
+
+      return NextResponse.json({ success: true, data });
+    };
+
+    if (auth.tokenAccess || (auth.isCardOwner && !auth.isEventOrganizerOrStaff)) {
+      return runWithRlsBypassAsync(applyPatch);
+    }
+    const cookieStore = await cookies();
+    return withApiTenantContext(cookieStore, applyPatch);
+  } catch (err: unknown) {
+    return apiRouteErrorResponse(err, "Internal Server Error");
+  }
+}
+
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    if (!isValidUuid(id)) return NextResponse.json({ error: "Invalid card id" }, { status: 400 });
+    const auth = await getAuthedSessionAndPermission(_, id, "delete");
+    if (auth.error) return auth.error;
+
+    const performDelete = async () => {
+      const deleted = auth.tenantId
+        ? await deleteAttendeeForTenant(id, auth.tenantId)
+        : await runWithRlsBypassAsync(async () => {
+            const rows = await queryNeon<{ id: string }>(
+              `DELETE FROM public.attendees WHERE id = $1 RETURNING id`,
+              [id],
+            );
+            return rows.length > 0;
+          });
+
+      if (!deleted) {
+        return NextResponse.json({ error: "Attendee not found." }, { status: 404 });
+      }
+
+      return NextResponse.json({ success: true }, { status: 200 });
+    };
+
+    if (auth.tokenAccess) {
+      return runWithRlsBypassAsync(performDelete);
+    }
+    const cookieStore = await cookies();
+    return withApiTenantContext(cookieStore, performDelete);
+  } catch (err: unknown) {
+    return apiRouteErrorResponse(err, "Internal Server Error");
+  }
+}

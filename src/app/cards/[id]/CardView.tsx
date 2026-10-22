@@ -1,0 +1,651 @@
+"use client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import GradientBackground from "@/components/GradientBackground";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Separator } from "@/components/ui/separator";
+import { CardPreview } from "@/components/CardPreview";
+import { CardArtboardScaler } from "@/components/CardArtboardScaler";
+import { CARD_ARTBOARD_HORIZONTAL, CARD_ARTBOARD_VERTICAL } from "@/lib/card-preview-scale";
+import { ArrowLeft, Download } from "lucide-react";
+import { toPng } from "html-to-image";
+import { waitForCardFontsReadyForCapture } from "@/lib/card-font-runtime";
+import { CardData } from "@/types/card";
+import { toast } from "sonner";
+import { openManualLinkedInShareFallback } from "@/lib/share/linkedin-card-share";
+import { LinkedInShareDialog } from "@/components/share/LinkedInShareDialog";
+import { logger } from "@/lib/logger-client";
+import { AttendeeSocialLinksBar } from "@/components/AttendeeSocialLinks";
+
+function LinkedInIcon({ className = "w-4 h-4" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.28 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.75M6.46 10.9v8.37H9.2V10.9H6.46M7.83 6.64a1.65 1.65 0 0 0-1.66 1.66 1.66 1.66 0 0 0 1.66 1.66 1.65 1.65 0 0 0 1.65-1.66 1.66 1.66 0 0 0-1.65-1.66" />
+    </svg>
+  );
+}
+
+export default function CardView({
+  card,
+  isShareMode = false,
+  initialViewMode = "horizontal",
+  impersonateId = "",
+  shareToken = "",
+}: {
+  card: CardData;
+  isShareMode?: boolean;
+  initialViewMode?: "horizontal" | "vertical";
+  impersonateId?: string;
+  shareToken?: string;
+}) {
+  const router = useRouter();
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [showLinkedInDialog, setShowLinkedInDialog] = useState(false);
+  const [viewMode, setViewMode] = useState<"horizontal" | "vertical">(initialViewMode);
+  const [badgeSide, setBadgeSide] = useState<1 | 2>(1);
+  const [horizontalPreviewFailed, setHorizontalPreviewFailed] = useState(false);
+  const [verticalFrontPreviewFailed, setVerticalFrontPreviewFailed] = useState(false);
+  const [verticalBackPreviewFailed, setVerticalBackPreviewFailed] = useState(false);
+  const [showBadgeDownloadMenu, setShowBadgeDownloadMenu] = useState(false);
+  const [showPostDownloadMenu, setShowPostDownloadMenu] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const horizontalFrontExportRef = useRef<HTMLDivElement>(null);
+  const verticalFrontExportRef = useRef<HTMLDivElement>(null);
+  const verticalBackExportRef = useRef<HTMLDivElement>(null);
+  const horizontalPreviewUrl = useMemo(
+    () => String(card.cardPreviewUrl || "").trim(),
+    [card.cardPreviewUrl],
+  );
+  const verticalFrontPreviewUrl = useMemo(
+    () => String(card.verticalFrontUrl || "").trim(),
+    [card.verticalFrontUrl],
+  );
+  const verticalBackPreviewUrl = useMemo(
+    () => String(card.verticalBackUrl || "").trim(),
+    [card.verticalBackUrl],
+  );
+  const backHref = useMemo(() => {
+    if (card?.eventId) {
+      return impersonateId
+        ? `/dashboard/events/${card.eventId}?impersonate=${encodeURIComponent(impersonateId)}`
+        : `/dashboard/events/${card.eventId}`;
+    }
+    return impersonateId ? `/dashboard?impersonate=${encodeURIComponent(impersonateId)}` : "/dashboard";
+  }, [card.eventId, impersonateId]);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("cardViewMode");
+      if ((saved === "horizontal" || saved === "vertical") && saved !== viewMode) {
+        setViewMode(saved);
+      }
+    } catch {
+    }
+  }, [viewMode]);
+
+  const changeViewMode = (mode: "horizontal" | "vertical") => {
+    setViewMode(mode);
+    if (mode === "vertical") {
+      setBadgeSide(1);
+    }
+    try {
+      window.localStorage.setItem("cardViewMode", mode);
+      document.cookie = `cardViewMode=${mode}; Path=/; Max-Age=31536000; SameSite=Lax`;
+    } catch {
+    }
+  };
+
+  useEffect(() => {
+    setHorizontalPreviewFailed(false);
+    setVerticalFrontPreviewFailed(false);
+    setVerticalBackPreviewFailed(false);
+  }, [card.id, horizontalPreviewUrl, verticalFrontPreviewUrl, verticalBackPreviewUrl]);
+
+  const getHorizontalExports = async () => {
+    const blobToDataUrl = (blob: Blob) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Failed to read card image blob."));
+        reader.readAsDataURL(blob);
+      });
+    const getBlobFromRef = async (ref: HTMLDivElement | null) => {
+      if (!ref) throw new Error("Card previews are not ready yet.");
+      await waitForCardFontsReadyForCapture(String(card.fontFamily || "inter"));
+      const dataUrl = await toPng(ref, {
+        quality: 1,
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+        skipFonts: false,
+      });
+      const res = await fetch(dataUrl);
+      if (!res.ok) throw new Error("Failed to render card export image.");
+      return res.blob();
+    };
+
+    const frontBlob = await getBlobFromRef(horizontalFrontExportRef.current);
+    const frontDataUrl = await blobToDataUrl(frontBlob);
+    return { frontDataUrl, frontBlob };
+  };
+
+  const handleDownload = async (side?: 1 | 2) => {
+    const targetRef = viewMode === "vertical"
+      ? (side === 2 ? verticalBackExportRef.current : (side === 1 ? verticalFrontExportRef.current : cardRef.current))
+      : (horizontalFrontExportRef.current || cardRef.current);
+    if (!targetRef) return;
+    setIsDownloading(true);
+    try {
+      await waitForCardFontsReadyForCapture(String(card.fontFamily || "inter"));
+      const dataUrl = await toPng(targetRef, {
+        quality: 1,
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+        skipFonts: false,
+      });
+
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const sideSuffix = viewMode === "vertical" ? (badgeSide === 1 ? "-front" : "-back") : "";
+      link.download = `avtive-${viewMode}-${
+        card?.name?.replace(/\s+/g, "-").toLowerCase() || "attendee"
+      }${sideSuffix}.png`;
+      link.href = blobUrl;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 2000);
+      toast.success(viewMode === "horizontal" ? "Social post downloaded successfully!" : "Attendee badge downloaded successfully!");
+    } catch (err) {
+      logger.error({ err }, "Failed to download card");
+      toast.error("Failed to generate download. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleDownloadPostPdf = async () => {
+    setIsDownloading(true);
+    setShowPostDownloadMenu(false);
+    try {
+      const { frontDataUrl } = await getHorizontalExports();
+      const [{ jsPDF }] = await Promise.all([import("jspdf")]);
+      const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const margin = 8;
+      const cardAspect = 628 / 1200;
+      let renderWidth = pageWidth - margin * 2;
+      let renderHeight = renderWidth * cardAspect;
+      if (renderHeight > pageHeight - margin * 2) {
+        renderHeight = pageHeight - margin * 2;
+        renderWidth = renderHeight / cardAspect;
+      }
+      const x = (pageWidth - renderWidth) / 2;
+      const y = (pageHeight - renderHeight) / 2;
+      doc.addImage(frontDataUrl, "PNG", x, y, renderWidth, renderHeight, undefined, "FAST");
+      const filename = `avtive-post-${card?.name?.replace(/\s+/g, "-").toLowerCase() || "attendee"}.pdf`;
+      doc.save(filename);
+      toast.success("Social post PDF downloaded successfully!");
+    } catch (err) {
+      logger.error({ err }, "Failed to download post PDF");
+      toast.error("Failed to generate post PDF. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const getVerticalExports = async () => {
+    const blobToDataUrl = (blob: Blob) =>
+      new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Failed to read badge image blob."));
+        reader.readAsDataURL(blob);
+      });
+    const getBlobFromUrl = async (url: string) => {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Failed to fetch badge image (${res.status}).`);
+      return res.blob();
+    };
+    const getBlobFromRef = async (ref: HTMLDivElement | null) => {
+      if (!ref) throw new Error("Badge previews are not ready yet.");
+      await waitForCardFontsReadyForCapture(String(card.fontFamily || "inter"));
+      const dataUrl = await toPng(ref, {
+        quality: 1,
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+        skipFonts: false,
+      });
+      const res = await fetch(dataUrl);
+      if (!res.ok) throw new Error("Failed to render badge export image.");
+      return res.blob();
+    };
+
+    const [frontBlob, backBlob] = await Promise.all([
+      verticalFrontPreviewUrl && !verticalFrontPreviewFailed
+        ? getBlobFromUrl(verticalFrontPreviewUrl)
+        : getBlobFromRef(verticalFrontExportRef.current),
+      verticalBackPreviewUrl && !verticalBackPreviewFailed
+        ? getBlobFromUrl(verticalBackPreviewUrl)
+        : getBlobFromRef(verticalBackExportRef.current),
+    ]);
+    const [frontDataUrl, backDataUrl] = await Promise.all([blobToDataUrl(frontBlob), blobToDataUrl(backBlob)]);
+    return { frontDataUrl, backDataUrl, frontBlob, backBlob };
+  };
+
+  const handleDownloadBadgePdf = async () => {
+    setIsDownloading(true);
+    setShowBadgeDownloadMenu(false);
+    try {
+      const { frontDataUrl, backDataUrl } = await getVerticalExports();
+      const [{ jsPDF }] = await Promise.all([import("jspdf")]);
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+      const addCardPage = (dataUrl: string) => {
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const margin = 10;
+        const cardAspect = 1024 / 576;
+        let renderWidth = pageWidth - margin * 2;
+        let renderHeight = renderWidth * cardAspect;
+        if (renderHeight > pageHeight - margin * 2) {
+          renderHeight = pageHeight - margin * 2;
+          renderWidth = renderHeight / cardAspect;
+        }
+        const x = (pageWidth - renderWidth) / 2;
+        const y = (pageHeight - renderHeight) / 2;
+        doc.addImage(dataUrl, "PNG", x, y, renderWidth, renderHeight, undefined, "FAST");
+      };
+      addCardPage(frontDataUrl);
+      doc.addPage("a4", "portrait");
+      addCardPage(backDataUrl);
+      const filename = `avtive-badge-${card?.name?.replace(/\s+/g, "-").toLowerCase() || "attendee"}.pdf`;
+      doc.save(filename);
+      toast.success("Attendee badge PDF (Front & Back) downloaded successfully!");
+    } catch (err) {
+      logger.error({ err }, "Failed to download badge PDF");
+      toast.error("Failed to generate badge PDF. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleDownloadBadgeZip = async () => {
+    setIsDownloading(true);
+    setShowBadgeDownloadMenu(false);
+    try {
+      const { frontBlob, backBlob } = await getVerticalExports();
+      const [{ default: JSZip }] = await Promise.all([import("jszip")]);
+      const zip = new JSZip();
+      const base = card?.name?.replace(/\s+/g, "-").toLowerCase() || "attendee";
+      zip.file(`${base}-badge-front.png`, frontBlob);
+      zip.file(`${base}-badge-back.png`, backBlob);
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(zipBlob);
+      link.download = `avtive-badge-${base}.zip`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      toast.success("Attendee badge ZIP (Front & Back) downloaded successfully!");
+    } catch (err) {
+      logger.error({ err }, "Failed to download badge ZIP");
+      toast.error("Failed to generate badge ZIP. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const handleShareLinkedIn = () => {
+    setShowLinkedInDialog(true);
+  };
+
+  const handleManualShareLinkedIn = () => {
+    openManualLinkedInShareFallback({
+      cardId: card.id,
+      name: card.name,
+      eventName: card.eventName,
+      role: card.role,
+      company: card.company,
+      cardRole: card.cardRole,
+      organizationName: card.organizationName,
+    });
+    toast.success("Opening LinkedIn fallback — link and caption copied.");
+  };
+
+  const handleEnsurePreviewUploaded = async (): Promise<string | undefined> => {
+    if (card.cardPreviewUrl && !horizontalPreviewFailed) {
+      return card.cardPreviewUrl;
+    }
+    if (!horizontalFrontExportRef.current) return undefined;
+    try {
+      const { frontDataUrl } = await getHorizontalExports();
+      const eventId = card.eventId || "general";
+      const uploadRes = await fetch("/api/media/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataUrl: frontDataUrl,
+          folder: `card-previews/${eventId}`,
+          publicId: `${card.id}-horizontal`,
+        }),
+      });
+      const uploadPayload = await uploadRes.json();
+      if (uploadRes.ok && uploadPayload?.data?.url) {
+        const previewUrl = String(uploadPayload.data.url);
+        // Persist to attendee record
+        await fetch(`/api/cards/${card.id}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...(shareToken ? { Authorization: `Bearer ${shareToken}` } : {}),
+          },
+          body: JSON.stringify({ card_preview_url: previewUrl }),
+        }).catch(() => {});
+        return previewUrl;
+      }
+    } catch (previewErr) {
+      logger.warn({ err: previewErr instanceof Error ? previewErr : undefined }, "Preview capture upload skipped");
+    }
+    return undefined;
+  };
+
+  return (
+    <main className="relative min-h-screen w-full bg-transparent flex flex-col items-center py-12 md:py-16 px-2 sm:px-4 lg:px-6 print:p-0">
+      <GradientBackground />
+
+      <div className="no-print relative z-10 w-full max-w-[860px] flex flex-col gap-8 md:gap-10 animate-slide-up">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex flex-col gap-4">
+             {isShareMode ? (
+                <div className="flex items-center gap-3">
+                   <span className="text-sm font-normal tracking-[0.01em] leading-tight text-muted/65">
+                     Avtive attendee portal
+                   </span>
+                </div>
+             ) : (
+                <div className="flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      router.push(backHref);
+                      router.refresh();
+                    }}
+                    className="gap-2.5 px-0 text-base font-semibold text-heading hover:text-ink hover:underline underline-offset-4 group cursor-pointer bg-transparent"
+                  >
+                    <ArrowLeft size={16} className="group-hover:-translate-x-1 transition-transform" />
+                    Back
+                  </Button>
+                </div>
+             )}
+
+             {/* View toggles: Post View vs Badge View */}
+             <Card className="flex flex-row bg-white/10 p-1 rounded-md w-fit border-white/20 gap-1 shadow-none">
+                <Button
+                  type="button"
+                  variant={viewMode === "horizontal" ? "default" : "ghost"}
+                  onClick={() => changeViewMode("horizontal")}
+                  className={`h-8 min-w-[120px] px-3.5 rounded-sm text-sm leading-tight font-semibold tracking-[0.01em] ${viewMode === "horizontal" ? "shadow-md" : "text-muted hover:text-heading hover:bg-white/20"}`}
+                >
+                  Post View
+                </Button>
+                <Button
+                  type="button"
+                  variant={viewMode === "vertical" ? "default" : "ghost"}
+                  onClick={() => changeViewMode("vertical")}
+                  className={`h-8 min-w-[120px] px-3.5 rounded-sm text-sm leading-tight font-semibold tracking-[0.01em] ${viewMode === "vertical" ? "shadow-md" : "text-muted hover:text-heading hover:bg-white/20"}`}
+                >
+                  Badge View
+                </Button>
+             </Card>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {isShareMode && shareToken && (
+              <Link
+                href={`/cards/${card.id}/edit?share=true&token=${encodeURIComponent(shareToken)}`}
+                className={buttonVariants({ variant: "secondary", className: "shadow-lg flex-1 md:flex-initial min-w-[116px]" })}
+              >
+                Edit
+              </Link>
+            )}
+            {viewMode === "horizontal" && (
+              <Button
+                onClick={handleShareLinkedIn}
+                disabled={isDownloading}
+                className="bg-[#0A66C2] hover:bg-[#004182] text-white shadow-lg shadow-[#0A66C2]/20 flex-1 md:flex-initial min-w-[170px] gap-2 font-medium"
+              >
+                <LinkedInIcon className="w-4 h-4 shrink-0" />
+                Share on LinkedIn
+              </Button>
+            )}
+            {viewMode === "vertical" ? (
+              <div className="relative">
+                <Button
+                  onClick={() => setShowBadgeDownloadMenu((prev) => !prev)}
+                  disabled={isDownloading}
+                  variant="secondary"
+                  className="shadow-lg flex-1 md:flex-initial min-w-[190px]"
+                >
+                  <Download size={18} />
+                  {isDownloading ? "Preparing…" : "Download Badge"}
+                </Button>
+                {showBadgeDownloadMenu && (
+                  <Card className="absolute right-0 mt-2 w-64 rounded-md border-border/70 bg-white p-1 shadow-xl z-50 overflow-hidden">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleDownloadBadgePdf}
+                      className="h-auto w-full justify-start px-3 py-2.5 text-left text-sm text-heading hover:bg-slate-50"
+                    >
+                      Download Badge (PDF)
+                    </Button>
+                    <Separator className="bg-border/60" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleDownloadBadgeZip}
+                      className="h-auto w-full justify-start px-3 py-2.5 text-left text-sm text-heading hover:bg-slate-50"
+                    >
+                      Download Badge (ZIP)
+                    </Button>
+                    <Separator className="bg-border/60" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setShowBadgeDownloadMenu(false);
+                        void handleDownload(badgeSide);
+                      }}
+                      className="h-auto w-full justify-start px-3 py-2.5 text-left text-sm text-heading hover:bg-slate-50"
+                    >
+                      Download Current Side (PNG)
+                    </Button>
+                  </Card>
+                )}
+              </div>
+            ) : (
+              <div className="relative">
+                <Button
+                  onClick={() => setShowPostDownloadMenu((prev) => !prev)}
+                  disabled={isDownloading}
+                  className="shadow-lg shadow-black/10 flex-1 md:flex-initial min-w-[190px]"
+                >
+                  <Download size={18} />
+                  {isDownloading ? "Preparing…" : "Download Post"}
+                </Button>
+                {showPostDownloadMenu && (
+                  <Card className="absolute right-0 mt-2 w-64 rounded-md border-border/70 bg-white p-1 shadow-xl z-50 overflow-hidden">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={() => {
+                        setShowPostDownloadMenu(false);
+                        void handleDownload();
+                      }}
+                      className="h-auto w-full justify-start px-3 py-2.5 text-left text-sm text-heading hover:bg-slate-50"
+                    >
+                      Download Image (PNG)
+                    </Button>
+                    <Separator className="bg-border/60" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleDownloadPostPdf}
+                      className="h-auto w-full justify-start px-3 py-2.5 text-left text-sm text-heading hover:bg-slate-50"
+                    >
+                      Download Post (PDF)
+                    </Button>
+                  </Card>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Hidden 1:1 scale container strictly for clean, unscaled downloads */}
+        <div style={{ position: 'absolute', top: '-9999px', left: '-9999px', overflow: 'hidden' }}>
+          <div 
+            ref={cardRef} 
+            style={{ 
+              width: viewMode === "horizontal" ? "1200px" : "576px", 
+              height: viewMode === "horizontal" ? "628px" : "1024px" 
+            }}
+          >
+            <CardPreview 
+               data={card} 
+               isVertical={viewMode === "vertical"} 
+               verticalSide={badgeSide}
+            />
+          </div>
+          <div ref={horizontalFrontExportRef} style={{ width: "1200px", height: "628px" }}>
+            <CardPreview data={card} isVertical={false} />
+          </div>
+          <div ref={verticalFrontExportRef} style={{ width: "576px", height: "1024px" }}>
+            <CardPreview data={card} isVertical verticalSide={1} />
+          </div>
+          <div ref={verticalBackExportRef} style={{ width: "576px", height: "1024px" }}>
+            <CardPreview data={card} isVertical verticalSide={2} />
+          </div>
+        </div>
+
+        <div className="w-full flex flex-col items-center gap-6">
+          {viewMode === "horizontal" ? (
+            <CardArtboardScaler
+              artboardWidth={CARD_ARTBOARD_HORIZONTAL.width}
+              artboardHeight={CARD_ARTBOARD_HORIZONTAL.height}
+              className="w-full max-w-[860px]"
+              maxScale={0.82}
+            >
+              <CardPreview data={card} isVertical={false} />
+            </CardArtboardScaler>
+          ) : (
+            <>
+              <Card className="flex flex-row bg-white/10 p-1 rounded-md w-fit border-white/20 gap-1 shadow-none">
+                <Button
+                  type="button"
+                  variant={badgeSide === 1 ? "default" : "ghost"}
+                  onClick={() => setBadgeSide(1)}
+                  className={`h-9 min-w-[108px] px-4 rounded-md text-sm font-semibold tracking-[0.01em] ${badgeSide === 1 ? "shadow-lg" : "text-muted hover:text-heading hover:bg-white/20"}`}
+                >
+                  Front
+                </Button>
+                <Button
+                  type="button"
+                  variant={badgeSide === 2 ? "default" : "ghost"}
+                  onClick={() => setBadgeSide(2)}
+                  className={`h-9 min-w-[108px] px-4 rounded-md text-sm font-semibold tracking-[0.01em] ${badgeSide === 2 ? "shadow-lg" : "text-muted hover:text-heading hover:bg-white/20"}`}
+                >
+                  Back (Pass & QR)
+                </Button>
+              </Card>
+              <CardArtboardScaler
+                artboardWidth={CARD_ARTBOARD_VERTICAL.width}
+                artboardHeight={CARD_ARTBOARD_VERTICAL.height}
+                className="w-full max-w-[395px]"
+                maxScale={0.72}
+              >
+                <CardPreview data={card} isVertical verticalSide={badgeSide} />
+              </CardArtboardScaler>
+            </>
+          )}
+        </div>
+
+        {/* Social Links & Professional Profiles */}
+        <div className="w-full flex flex-col items-center">
+          <AttendeeSocialLinksBar
+            linkedin={card.linkedin}
+            socialLinks={card.social_links}
+            attendeeName={card.name}
+            variant="pills"
+          />
+        </div>
+
+        <div className="text-center flex flex-col gap-2">
+          <p className="text-sm text-slate-400 font-normal leading-[1.6]">
+            {viewMode === "horizontal" 
+               ? "This design is optimized for LinkedIn posts and social sharing."
+               : "This design is optimized for physical printing and event check-in passes."
+            }
+          </p>
+          <span className="text-[13px] font-normal tracking-[0.01em] leading-tight text-heading/45">
+            Attendee ID: {card.id.slice(-8).toUpperCase()}
+          </span>
+        </div>
+      </div>
+
+      {/* Printer optimized container */}
+      <div className="print-only absolute top-0 left-0 w-full bg-white justify-center items-start pt-[1cm]">
+         <div style={{ width: "762px", height: "666px", position: "relative" }}>
+            <div style={{ transform: "scale(0.65)", transformOrigin: "top left", display: "flex", gap: "20px" }}>
+               <div style={{ width: "576px", height: "1024px" }}>
+                  <CardPreview data={card} isVertical={true} verticalSide={1} />
+               </div>
+               <div style={{ width: "576px", height: "1024px" }}>
+                  <CardPreview data={card} isVertical={true} verticalSide={2} />
+               </div>
+            </div>
+         </div>
+      </div>
+
+      <style>{`
+        @media screen {
+          .print-only { display: none !important; }
+        }
+        @media print {
+           @page { margin: 0; size: A4 portrait; }
+           .no-print, .no-print * { display: none !important; }
+           .print-only {
+              display: flex !important;
+              flex-direction: row;
+              justify-content: center;
+              align-items: flex-start;
+           }
+           * {
+              -webkit-print-color-adjust: exact !important;
+              color-adjust: exact !important;
+              print-color-adjust: exact !important;
+           }
+           body, main {
+              margin: 0 !important;
+              padding: 0 !important;
+              background: white !important;
+           }
+        }
+      `}</style>
+
+      <LinkedInShareDialog
+        isOpen={showLinkedInDialog}
+        onClose={() => setShowLinkedInDialog(false)}
+        card={card}
+        shareToken={shareToken}
+        onManualShareFallback={handleManualShareLinkedIn}
+        onEnsurePreviewUploaded={handleEnsurePreviewUploaded}
+      />
+    </main>
+  );
+}

@@ -1,0 +1,369 @@
+import Link from "next/link";
+import GradientBackground from "@/components/GradientBackground";
+import { Info } from "lucide-react";
+import CardView from "./CardView";
+import { buttonVariants } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { CardData } from "@/types/card";
+import { parseEventSponsors } from "@/lib/sponsors";
+import { Metadata } from "next";
+import { decryptAttendeeSensitiveFields } from "@/lib/security/attendee-sensitive";
+import { getAdminUserById } from "@/lib/admin";
+import { queryNeonOne } from "@/lib/neon-db";
+import { getServerAuthSession } from "@/auth";
+import { verifyAttendeeCardToken, tokenGrantsCardViewAccess } from "@/lib/security/tokens";
+import { isValidUuid } from "@/lib/validation/uuid";
+import { ensureAuthSchema } from "@/lib/auth-db";
+import { cookies } from "next/headers";
+import { buildCardOpenGraphMeta, resolveCardOpenGraphImage } from "@/lib/share/card-open-graph";
+import { logger } from "@/lib/logger-server";
+import { enterServerLogContext } from "@/lib/request-log-context";
+
+/** Card branding comes from DB; avoid stale HTML after org logo updates. */
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(props: { params: Promise<{ id: string }> }): Promise<Metadata> {
+  await enterServerLogContext();
+  const params = await props.params;
+  const id = params.id;
+  const defaultTitle = "Attendee Card | AVTIVE";
+  const defaultDesc = "Digital attendee badge for professional networking.";
+  const fallbackImage = resolveCardOpenGraphImage({
+    cardId: id,
+    cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME,
+  });
+
+  if (!isValidUuid(id)) {
+    return { title: defaultTitle, description: defaultDesc };
+  }
+
+  try {
+    // Timeout-resistant query (or just standard fetch)
+    const record = await queryNeonOne<Record<string, unknown>>(
+      `SELECT id, name, event_name, event_id, card_preview_url, photo_url 
+       FROM public.attendees 
+       WHERE id = $1`,
+      [id]
+    );
+
+    if (!record) {
+      return { title: defaultTitle, description: defaultDesc };
+    }
+
+    // Name and card_preview_url are Class C (public), no decryption needed
+    const attendeeName = String(record.name || "Attendee").trim();
+    const eventName = String(record.event_name || "Exclusive Event").trim();
+    const imageUrl = resolveCardOpenGraphImage({
+      cardPreviewUrl: record.card_preview_url,
+      eventId: record.event_id,
+      cardId: id,
+      cloudinaryCloudName: process.env.CLOUDINARY_CLOUD_NAME,
+    });
+
+    return buildCardOpenGraphMeta({
+      cardId: id,
+      attendeeName,
+      eventName,
+      imageUrl: imageUrl || fallbackImage,
+    });
+  } catch (err) {
+    logger.error({ err }, "Metadata generation error");
+    return { 
+      title: defaultTitle,
+      description: defaultDesc,
+      openGraph: {
+        images: [fallbackImage],
+      }
+    };
+  }
+}
+
+// This makes the page a Server Component
+export default async function CardViewPage(props: { 
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ share?: string; token?: string; impersonate?: string }>;
+}) {
+  await enterServerLogContext();
+  const appendVersionParam = (url: string, version: string) => {
+    const cleanUrl = String(url || "").trim();
+    if (!cleanUrl || !version) return cleanUrl;
+    const sep = cleanUrl.includes("?") ? "&" : "?";
+    return `${cleanUrl}${sep}v=${encodeURIComponent(version)}`;
+  };
+  const readString = (value: unknown) => (typeof value === "string" ? value : "");
+  const params = await props.params;
+  const searchParams = await props.searchParams;
+  const id = params.id;
+  if (!isValidUuid(id)) {
+    return (
+      <main className="relative min-h-screen w-full flex items-center justify-center p-8 text-center bg-transparent">
+        <GradientBackground />
+        <Card className="relative z-10 flex flex-col items-center gap-4 glass-panel p-10 rounded-xl shadow-2xl max-w-sm animate-slide-up">
+          <div className="flex flex-col gap-1">
+            <p className="text-heading font-semibold">Invalid card link</p>
+          </div>
+        </Card>
+      </main>
+    );
+  }
+  const isShareMode = searchParams?.share === "true";
+  const cookieStore = await cookies();
+  const savedViewMode = cookieStore.get("cardViewMode")?.value;
+  const initialViewMode: "horizontal" | "vertical" =
+    savedViewMode === "vertical" ? "vertical" : "horizontal";
+  const token = String(searchParams?.token || "");
+  const impersonateId = String(searchParams?.impersonate || "").trim();
+  let card: CardData | null = null;
+  let effectiveShareMode = isShareMode;
+
+  try {
+    await ensureAuthSchema();
+    const session = await getServerAuthSession();
+    const authedUserId = String(session?.user?.id || "").trim();
+    const sessionEmail = String(session?.user?.email || "").trim().toLowerCase();
+    let hasSignedAccess = false;
+    if (token) {
+      try {
+        const verified = await verifyAttendeeCardToken(token);
+        hasSignedAccess = tokenGrantsCardViewAccess(
+          verified.payload.scope,
+          id,
+          verified.payload.cardId,
+        );
+      } catch {
+        hasSignedAccess = false;
+      }
+    }
+
+    const record = await queryNeonOne<Record<string, unknown>>(
+      `SELECT * FROM public.attendees WHERE id = $1`,
+      [id],
+    );
+    
+    if (record) {
+      const { row: secureRecord } = decryptAttendeeSensitiveFields(record);
+      const attendeeEmail = String(secureRecord.card_email || "").trim().toLowerCase();
+      const isCardOwner = Boolean(
+        (record.user_id && String(record.user_id).trim() === authedUserId) ||
+        (sessionEmail && attendeeEmail && attendeeEmail === sessionEmail)
+      );
+
+      const adminEmails = (process.env.ADMIN_EMAILS || process.env.ADMIN_EMAIL || "")
+        .split(",")
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean);
+      const role = String(session?.user?.role || "").toLowerCase();
+      const isAdmin = role === "admin" || Boolean(sessionEmail && adminEmails.includes(sessionEmail));
+      let isEventOrganizerOrStaff = false;
+
+      /** Cache-bust string for Cloudinary URLs; must stay in scope for entire `card` build. */
+      let previewVersion = "";
+      const customFields =
+        secureRecord.custom_fields &&
+        typeof secureRecord.custom_fields === "object" &&
+        !Array.isArray(secureRecord.custom_fields)
+          ? (secureRecord.custom_fields as Record<string, unknown>)
+          : {};
+      /** Per-attendee overrides (edit flow). Event-level branding lives on `events` — must merge or Badge View falls back to hardcoded black on the white panel. */
+      let eventHorizontalTextColor = "";
+      let eventVerticalTextColor = "";
+      let eventCardColor = "";
+      let eventCardFont = "";
+      let sponsors = undefined as CardData["sponsors"];
+      let organizationName = "";
+      let organizationLogoUrl = "";
+      if (secureRecord.event_id) {
+        const ev = await queryNeonOne<{
+          sponsors: unknown;
+          user_id: string | null;
+          logo_url: string | null;
+          horizontal_text_color: string | null;
+          vertical_text_color: string | null;
+          card_color: string | null;
+          card_font: string | null;
+        }>(
+          `SELECT sponsors, user_id, logo_url, horizontal_text_color, vertical_text_color, card_color, card_font
+           FROM public.events
+           WHERE id = $1`,
+          [secureRecord.event_id],
+        );
+        if (ev) {
+          eventHorizontalTextColor = readString(ev.horizontal_text_color);
+          eventVerticalTextColor = readString(ev.vertical_text_color);
+          eventCardColor = readString(ev.card_color);
+          eventCardFont = readString(ev.card_font);
+          sponsors = parseEventSponsors(ev.sponsors);
+          const campaignLogoUrl = String(ev.logo_url || "").trim();
+
+          if (ev.user_id && authedUserId) {
+            if (String(ev.user_id).trim() === authedUserId) {
+              isEventOrganizerOrStaff = true;
+            } else {
+              const membership = await queryNeonOne<{ id: string }>(
+                `SELECT id FROM public.organization_members
+                 WHERE member_user_id = $1 AND org_owner_user_id = $2 AND status = 'active'
+                 LIMIT 1`,
+                [authedUserId, String(ev.user_id).trim()],
+              );
+              if (membership?.id) {
+                isEventOrganizerOrStaff = true;
+              }
+            }
+          }
+          
+          if (ev.user_id) {
+            try {
+              const ownerId = String(ev.user_id).trim();
+              const profileData = await queryNeonOne<{
+                organization_name: string | null;
+                organization_logo_url: string | null;
+              }>(
+                `SELECT
+                   organization_name,
+                   to_jsonb(p.*)->>'organization_logo_url' AS organization_logo_url
+                 FROM public.profiles p
+                 WHERE id = $1::uuid`,
+                [ownerId],
+              );
+              let userData: Awaited<ReturnType<typeof getAdminUserById>> | null = null;
+              try {
+                userData = await getAdminUserById(ownerId);
+              } catch {
+                userData = null;
+              }
+              organizationName =
+                String(profileData?.organization_name || "").trim() ||
+                (typeof userData?.publicMetadata?.organization_name === "string"
+                  ? String(userData.publicMetadata.organization_name).trim()
+                  : "");
+              
+              // Campaign-specific logo takes precedence over profile logo
+              organizationLogoUrl = campaignLogoUrl ||
+                String(profileData?.organization_logo_url || "").trim() ||
+                (typeof userData?.publicMetadata?.organization_logo_url === "string"
+                  ? String(userData.publicMetadata.organization_logo_url).trim()
+                  : "");
+            } catch (brandingErr) {
+              logger.error({ err: brandingErr instanceof Error ? brandingErr : undefined }, "Branding fetch failed");
+            }
+          }
+        }
+      }
+
+      // If user has direct link or is viewing public attendee card, allow view access (isShareMode)
+      effectiveShareMode = isShareMode || (!isCardOwner && !isEventOrganizerOrStaff && !isAdmin);
+
+      const horizontalTextColor =
+        readString(customFields.__horizontal_text_color) || eventHorizontalTextColor;
+      const verticalTextColor =
+        readString(customFields.__vertical_text_color) || eventVerticalTextColor;
+
+      previewVersion = [
+        String(secureRecord.updated_at || "").trim(),
+        readString(secureRecord.photo_url),
+        readString(secureRecord.name),
+        readString(secureRecord.role),
+        readString(secureRecord.company),
+        readString(secureRecord.card_color) || eventCardColor,
+        horizontalTextColor,
+        verticalTextColor,
+        readString(secureRecord.linkedin),
+      ]
+        .filter(Boolean)
+        .join("|");
+
+      card = {
+        id: readString(secureRecord.id),
+        name: readString(secureRecord.name),
+      
+        role: readString(secureRecord.role) || "Attendee", 
+        company: readString(secureRecord.company),
+        email: readString(secureRecord.card_email),
+        eventId: readString(secureRecord.event_id) || undefined,
+        eventName: readString(secureRecord.event_name),
+        sessionDate: readString(secureRecord.session_date),
+        sessionTime: readString(secureRecord.session_time) || undefined,
+        location: readString(secureRecord.location),
+        track: readString(secureRecord.track),
+        year: readString(secureRecord.year),
+        linkedin: readString(secureRecord.linkedin),
+        social_links:
+          customFields.social_links &&
+          typeof customFields.social_links === "object" &&
+          !Array.isArray(customFields.social_links)
+            ? (customFields.social_links as import("@/types/card").AttendeeSocialLinks)
+            : undefined,
+        photo: readString(secureRecord.photo_url) || undefined,
+        designType: readString(secureRecord.design_type),
+        color: readString(secureRecord.card_color) || eventCardColor || undefined,
+        horizontalTextColor: horizontalTextColor || undefined,
+        verticalTextColor: verticalTextColor || undefined,
+        fontFamily: readString(secureRecord.card_font) || eventCardFont || undefined,
+        cardRole: readString(secureRecord.track) as "guest" | "visitor",
+        guestCategory: readString(secureRecord.guest_category),
+        sponsors,
+        organizationName,
+        organizationLogoUrl,
+        cardPreviewUrl:
+          appendVersionParam(
+            readString(secureRecord.card_preview_url) ||
+          (process.env.CLOUDINARY_CLOUD_NAME && readString(secureRecord.event_id)
+            ? `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/card-previews/${readString(secureRecord.event_id)}/${readString(secureRecord.id)}-horizontal`
+            : ""),
+            previewVersion,
+          ) || undefined,
+        verticalFrontUrl:
+          process.env.CLOUDINARY_CLOUD_NAME && readString(secureRecord.event_id)
+            ? appendVersionParam(
+                `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/card-previews/${readString(secureRecord.event_id)}/${readString(secureRecord.id)}-vertical-front`,
+                previewVersion,
+              )
+            : undefined,
+        verticalBackUrl:
+          process.env.CLOUDINARY_CLOUD_NAME && readString(secureRecord.event_id)
+            ? appendVersionParam(
+                `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload/card-previews/${readString(secureRecord.event_id)}/${readString(secureRecord.id)}-vertical-back`,
+                previewVersion,
+              )
+            : undefined,
+      };
+    }
+  } catch (err) {
+    logger.error({ err }, "Server-side fetch error");
+    card = null;
+  }
+
+  if (!card) {
+    return (
+      <main className="relative min-h-screen w-full flex items-center justify-center p-8 text-center bg-transparent">
+        <GradientBackground />
+        <Card className="relative z-10 flex flex-col items-center gap-4 glass-panel p-10 rounded-xl shadow-2xl max-w-sm animate-slide-up">
+          <div className="w-12 h-12 rounded-md bg-surface flex items-center justify-center text-muted">
+            <Info size={24} />
+          </div>
+          <div className="flex flex-col gap-1">
+            <p className="text-heading font-semibold">Card not found</p>
+            <p className="text-sm text-muted">
+                The card you&apos;re looking for doesn&apos;t exist or my connection to the database is sleeping.
+            </p>
+          </div>
+          {!effectiveShareMode && (
+            <Link href="/dashboard" className={buttonVariants({ variant: "secondary", className: "mt-2" })}>
+              Back to Dashboard
+            </Link>
+          )}
+        </Card>
+      </main>
+    );
+  }
+
+  return (
+    <CardView
+      card={card}
+      isShareMode={effectiveShareMode}
+      initialViewMode={initialViewMode}
+      impersonateId={impersonateId}
+      shareToken={token}
+    />
+  );
+}

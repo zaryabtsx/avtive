@@ -1,0 +1,73 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+Thumbs.db
+ehthumbs.db
+*.pem
+*.swp
+*.swo
+.idea/
+.vscode/
+.agents/
+.claude/
+skills-lock.json
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+.env
+!.env.example
+
+# scratch scripts
+/scratch/
+/scripts/fonts-metadata-raw.json
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# cloudflare
+.warp/
+cloudflared.exe
+
+# clerk configuration (can include secrets)
+/.clerk/
+
+# Sentry Config File
+.env.sentry-build-plugin
+
+#Graphify
+graphify-out/
+
+DESIGN-discord.md
+design-linq.md
+/Linq-by-avtive/
