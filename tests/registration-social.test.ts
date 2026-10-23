@@ -167,11 +167,11 @@ describe("Attendee Registration with Mandatory LinkedIn & Social Links", () => {
         social_links?: Record<string, string>;
       } | undefined;
       expect(customFields).toBeDefined();
-      expect(customFields.social_links).toBeDefined();
-      expect(customFields.social_links.github).toBe("https://github.com/alexdev");
-      expect(customFields.social_links.twitter).toBe("https://x.com/alexdesigner");
-      expect(customFields.social_links.instagram).toBe("https://www.instagram.com/alex.design");
-      expect(customFields.social_links.website).toBe("https://alex.portfolio");
+      expect(customFields?.social_links).toBeDefined();
+      expect(customFields?.social_links?.github).toBe("https://github.com/alexdev");
+      expect(customFields?.social_links?.twitter).toBe("https://x.com/alexdesigner");
+      expect(customFields?.social_links?.instagram).toBe("https://www.instagram.com/alex.design");
+      expect(customFields?.social_links?.website).toBe("https://alex.portfolio");
     });
 
     it("rejects invalid platform URLs inside social_links", async () => {

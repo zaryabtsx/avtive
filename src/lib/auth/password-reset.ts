@@ -124,14 +124,20 @@ export async function requestPasswordResetCode(email: string): Promise<{
       try {
         // Use getUserByEmail instead of listUsers() to avoid O(n) full scan
         const adminApi = supabase.auth.admin as typeof supabase.auth.admin & AdminApiWithGetUserByEmail;
-        const { data: sbUserData, error: sbErr } = await adminApi.getUserByEmail
-          ? await adminApi.getUserByEmail(normalized)
-          : supabase.auth.admin.listUsers().then(({ data, error }: { data: { users: Array<{ id: string; email?: string }> } | null; error: unknown }) => ({
-              data: { user: data?.users?.find((u: { id: string; email?: string }) => u.email?.toLowerCase() === normalized) },
-              error,
-            }));
+        let sbUser: { id: string; email?: string } | undefined;
+        let sbErr: unknown;
+        if (typeof adminApi.getUserByEmail === "function") {
+          const result = await adminApi.getUserByEmail(normalized);
+          sbUser = result.data?.user ?? undefined;
+          sbErr = result.error;
+        } else {
+          const result = await supabase.auth.admin.listUsers();
+          sbUser = result.data?.users.find(
+            (candidate) => candidate.email?.toLowerCase() === normalized,
+          );
+          sbErr = result.error;
+        }
 
-        const sbUser = sbUserData?.user;
         if (!sbErr && sbUser) {
           // Sync user to auth_users if missing
           const existingProfile = await queryNeonOneAsSystem<{ id: string }>(

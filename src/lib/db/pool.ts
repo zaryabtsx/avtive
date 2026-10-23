@@ -6,7 +6,6 @@ import { logger } from "@/lib/logger-server";
 
 export type SqlQueryDescriptor = { sql: string; params?: unknown[] };
 type NeonClient = ReturnType<typeof neon>;
-type NeonParameters = NonNullable<Parameters<NeonClient>[1]>;
 type NeonTransactionQueries = Parameters<NeonClient["transaction"]>[0];
 
 export interface UniversalSqlClient {
@@ -29,16 +28,16 @@ class NeonClientAdapter implements UniversalSqlClient {
     query: string,
     params: unknown[] = [],
   ): Promise<T[]> {
-    const result = await this.client(query, params as NeonParameters);
+    const result = await this.client.query(query, params);
     return result as T[];
   }
 
   async transaction(queries: Array<SqlQueryDescriptor | string>): Promise<unknown[]> {
     const neonQueries = queries.map((q) => {
       if (typeof q === "object" && q !== null && "sql" in q) {
-        return this.client(q.sql, (q.params || []) as NeonParameters);
+        return this.client.query(q.sql, q.params || []);
       }
-      return this.client(q);
+      return this.client.query(q);
     });
     return (await this.client.transaction(neonQueries as NeonTransactionQueries)) as unknown[];
   }
