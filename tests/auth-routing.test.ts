@@ -27,7 +27,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
 
   it("redirects root '/' to '/login' for every user opening the website", async () => {
     const req = new NextRequest("http://localhost:3000/");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(307);
     const location = res.headers.get("location");
@@ -40,7 +40,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
         cookie: "sb-auth-token=valid_supabase_token",
       },
     });
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).not.toBe(307);
     const location = res.headers.get("location");
@@ -58,7 +58,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/dashboard");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(307);
     const location = res.headers.get("location");
@@ -72,7 +72,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/dashboard/events/evt_123");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(307);
     const location = res.headers.get("location");
@@ -86,7 +86,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/admin");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(307);
     const location = res.headers.get("location");
@@ -100,7 +100,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/cards/new");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(307);
     const location = res.headers.get("location");
@@ -114,7 +114,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/events");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(307);
     const location = res.headers.get("location");
@@ -134,7 +134,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/dashboard");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(200);
     const location = res.headers.get("location");
@@ -154,7 +154,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/dashboard/events/evt_123");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(200);
     const location = res.headers.get("location");
@@ -173,7 +173,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/cards/new");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(200);
     const location = res.headers.get("location");
@@ -193,7 +193,7 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
     });
 
     const req = new NextRequest("http://localhost:3000/dashboard");
-    const res = await (proxyMiddleware as any)(req);
+    const res = await proxyMiddleware(req);
 
     expect(res.status).toBe(307);
     const location = res.headers.get("location");
@@ -202,11 +202,11 @@ describe("Supabase Authentication & Dashboard Routing Rules", () => {
 
   it("allows public signup and organization register pages for non-registered users", async () => {
     const signupReq = new NextRequest("http://localhost:3000/signup");
-    const signupRes = await (proxyMiddleware as any)(signupReq);
+    const signupRes = await proxyMiddleware(signupReq);
     expect(signupRes.status).toBe(200);
 
     const orgReq = new NextRequest("http://localhost:3000/organization/register");
-    const orgRes = await (proxyMiddleware as any)(orgReq);
+    const orgRes = await proxyMiddleware(orgReq);
     expect(orgRes.status).toBe(200);
   });
 });

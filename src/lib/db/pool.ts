@@ -1,11 +1,13 @@
 import {
   neon,
-  type NeonQueryFunction,
 } from "@neondatabase/serverless";
 import { Pool, type QueryResultRow } from "pg";
 import { logger } from "@/lib/logger-server";
 
 export type SqlQueryDescriptor = { sql: string; params?: unknown[] };
+type NeonClient = ReturnType<typeof neon>;
+type NeonParameters = NonNullable<Parameters<NeonClient>[1]>;
+type NeonTransactionQueries = Parameters<NeonClient["transaction"]>[0];
 
 export interface UniversalSqlClient {
   query<T extends QueryResultRow = Record<string, unknown>>(
@@ -17,7 +19,7 @@ export interface UniversalSqlClient {
 }
 
 class NeonClientAdapter implements UniversalSqlClient {
-  private client: any;
+  private client: NeonClient;
 
   constructor(connectionString: string) {
     this.client = neon(connectionString);
@@ -27,18 +29,18 @@ class NeonClientAdapter implements UniversalSqlClient {
     query: string,
     params: unknown[] = [],
   ): Promise<T[]> {
-    const result = await this.client(query, params as any[]);
+    const result = await this.client(query, params as NeonParameters);
     return result as T[];
   }
 
   async transaction(queries: Array<SqlQueryDescriptor | string>): Promise<unknown[]> {
     const neonQueries = queries.map((q) => {
       if (typeof q === "object" && q !== null && "sql" in q) {
-        return this.client(q.sql, (q.params || []) as any[]);
+        return this.client(q.sql, (q.params || []) as NeonParameters);
       }
       return this.client(q);
     });
-    return (await this.client.transaction(neonQueries as any)) as unknown[];
+    return (await this.client.transaction(neonQueries as NeonTransactionQueries)) as unknown[];
   }
 }
 

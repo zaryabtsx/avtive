@@ -113,7 +113,12 @@ export default async function middleware(request: NextRequest) {
 
   // 3. Protect all dashboard and private routes using Supabase Auth exclusively
   const response = NextResponse.next({ request: { headers: reqHeaders } });
-  let user: { id: string; email?: string; app_metadata?: Record<string, any>; user_metadata?: Record<string, any> } | null = null;
+  let user: {
+    id: string;
+    email?: string;
+    app_metadata?: Record<string, unknown>;
+    user_metadata?: Record<string, unknown>;
+  } | null = null;
 
   try {
     const supabase = createSupabaseMiddlewareClient(request, response);

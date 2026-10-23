@@ -32,7 +32,7 @@ function StatusTrackerForm() {
   const initialRef = searchParams.get("ref")?.trim() || "";
 
   const [refInput, setRefInput] = useState(initialRef);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(Boolean(initialRef));
   const [result, setResult] = useState<StatusData | null>(null);
   const [searched, setSearched] = useState(false);
 
@@ -65,7 +65,9 @@ function StatusTrackerForm() {
   useEffect(() => {
     if (!initialRef) return;
     let isCancelled = false;
-    setIsLoading(true);
+    const loadingFrame = window.requestAnimationFrame(() => {
+      if (!isCancelled) setIsLoading(true);
+    });
 
     fetch(`/api/organization-registration?ref=${encodeURIComponent(initialRef.trim())}`)
       .then((res) => res.json())
@@ -89,6 +91,7 @@ function StatusTrackerForm() {
 
     return () => {
       isCancelled = true;
+      window.cancelAnimationFrame(loadingFrame);
     };
   }, [initialRef]);
 

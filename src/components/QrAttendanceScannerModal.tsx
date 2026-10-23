@@ -252,9 +252,6 @@ export function QrAttendanceScannerModal({
     if (!isOpen) return;
 
     let mounted = true;
-    setIsInitializing(true);
-    setInitError(null);
-    setScanResult(null);
     isProcessingRef.current = false;
 
     const elementId = "qr-attendance-reader";
@@ -357,6 +354,9 @@ export function QrAttendanceScannerModal({
 
     // Short delay to ensure DOM element is mounted
     const initTimer = setTimeout(async () => {
+      setIsInitializing(true);
+      setInitError(null);
+      setScanResult(null);
       try {
         await startScanner();
         if (mounted) {

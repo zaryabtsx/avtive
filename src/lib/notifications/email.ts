@@ -41,7 +41,7 @@ export async function sendTransactionalEmail(input: AccessRequestEmailInput): Pr
   if (resendApiKey) {
     try {
       const resendAttachments = input.attachments
-        ?.map((att: any) => {
+        ?.map((att) => {
           if (!att) return null;
           if (typeof att.content === "string") {
             return { filename: att.filename, content: att.content };

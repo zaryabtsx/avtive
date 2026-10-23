@@ -74,25 +74,31 @@ export function SocialProfilesDialog({
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    let isCancelled = false;
+    const initialDraft: Record<string, string> = {};
+    const initialActive: SocialPlatform[] = [];
+
+    OPTIONAL_PLATFORMS.forEach((platform) => {
+      const val = socialLinks?.[platform];
+      if (val) {
+        initialDraft[platform] = val;
+        initialActive.push(platform);
+      } else {
+        initialDraft[platform] = "";
+      }
+    });
+
+    queueMicrotask(() => {
+      if (isCancelled) return;
       setDraftLinkedIn(linkedin || "");
-      const initialDraft: Record<string, string> = {};
-      const initialActive: SocialPlatform[] = [];
-
-      OPTIONAL_PLATFORMS.forEach((platform) => {
-        const val = socialLinks?.[platform];
-        if (val) {
-          initialDraft[platform] = val;
-          initialActive.push(platform);
-        } else {
-          initialDraft[platform] = "";
-        }
-      });
-
       setDraftSocials(initialDraft);
       setActivePlatforms(initialActive);
       setErrors({});
-    }
+    });
+    return () => {
+      isCancelled = true;
+    };
   }, [open, linkedin, socialLinks]);
 
   const handleLinkedInChange = (val: string) => {

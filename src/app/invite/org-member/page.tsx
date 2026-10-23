@@ -19,10 +19,7 @@ function InviteOrgMemberInner() {
   const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
-    if (!token) {
-      setMessage("Missing invitation token.");
-      return;
-    }
+    if (!token) return;
     fetch(`/api/organization-members/invite-info?token=${encodeURIComponent(token)}`)
       .then(res => res.json())
       .then(data => {
@@ -66,7 +63,7 @@ function InviteOrgMemberInner() {
           Accept this invitation while signed in with the same email address the invite was sent to.
         </p>
         {!token ? (
-          <p className="text-sm text-red-600">{message}</p>
+          <p className="text-sm text-red-600">{message || "Missing invitation token."}</p>
         ) : isPending ? (
           <p className="text-sm text-muted">Checking session…</p>
         ) : !session?.user ? (

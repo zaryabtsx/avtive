@@ -175,7 +175,7 @@ describe("Attendee Card with QR Code Email Flow", () => {
       expect(getSocialPlatformIcon("linkedin")).toBeDefined();
       expect(getSocialPlatformIcon("github")).toBeDefined();
       expect(getSocialPlatformIcon("twitter")).toBeDefined();
-      expect(getSocialPlatformIcon("unknown" as any)).toBeUndefined();
+      expect(getSocialPlatformIcon("unknown" as never)).toBeUndefined();
     });
 
     it("verifies attendee card scan URL pattern matches existing check-in route", () => {

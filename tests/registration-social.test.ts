@@ -116,7 +116,9 @@ describe("Attendee Registration with Mandatory LinkedIn & Social Links", () => {
       expect(result.data).toBeDefined();
       expect(neonDb.insertRow).toHaveBeenCalledTimes(1);
       const insertedPayload = vi.mocked(neonDb.insertRow).mock.calls[0][1];
-      const { row } = decryptAttendeeSensitiveFields(insertedPayload as any);
+      const { row } = decryptAttendeeSensitiveFields(
+        insertedPayload as unknown as Parameters<typeof decryptAttendeeSensitiveFields>[0],
+      );
       expect(row.linkedin).toBe("https://www.linkedin.com/in/janedev");
     });
 
@@ -153,13 +155,17 @@ describe("Attendee Registration with Mandatory LinkedIn & Social Links", () => {
       expect(result.data).toBeDefined();
       expect(neonDb.insertRow).toHaveBeenCalledTimes(1);
       const insertedPayload = vi.mocked(neonDb.insertRow).mock.calls[0][1];
-      const { row } = decryptAttendeeSensitiveFields(insertedPayload as any);
+      const { row } = decryptAttendeeSensitiveFields(
+        insertedPayload as unknown as Parameters<typeof decryptAttendeeSensitiveFields>[0],
+      );
 
       // Top-level social_links must be deleted so raw Postgres column does not error
       expect(row.social_links).toBeUndefined();
 
       // custom_fields must contain validated and normalized social_links
-      const customFields = row.custom_fields as Record<string, any>;
+      const customFields = row.custom_fields as {
+        social_links?: Record<string, string>;
+      } | undefined;
       expect(customFields).toBeDefined();
       expect(customFields.social_links).toBeDefined();
       expect(customFields.social_links.github).toBe("https://github.com/alexdev");
@@ -248,7 +254,9 @@ describe("Attendee Registration with Mandatory LinkedIn & Social Links", () => {
       const { row } = decryptAttendeeSensitiveFields(insertedRow.attendee_payload as Record<string, unknown>);
       expect(row.linkedin).toBe("https://www.linkedin.com/in/keynotespeaker");
       expect(row.social_links).toBeUndefined();
-      const customFields = row.custom_fields as Record<string, any>;
+      const customFields = row.custom_fields as {
+        social_links?: Record<string, string>;
+      } | undefined;
       expect(customFields?.social_links?.github).toBe("https://github.com/keynote");
       expect(customFields?.social_links?.youtube).toBe("https://www.youtube.com/@keynotespeaker");
     });

@@ -1,6 +1,5 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -40,14 +39,6 @@ export function LinkedInShareDialog({
   card,
   onEnsurePreviewUploaded,
 }: LinkedInShareDialogProps) {
-  const [clientOrigin, setClientOrigin] = useState<string>("");
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setClientOrigin(window.location.origin);
-    }
-  }, []);
-
   const handleConnectLinkedIn = async () => {
     if (onEnsurePreviewUploaded) {
       try {
@@ -65,7 +56,7 @@ export function LinkedInShareDialog({
       company: card.company,
       cardRole: card.cardRole,
       organizationName: card.organizationName,
-      origin: clientOrigin || undefined,
+      origin: typeof window === "undefined" ? undefined : window.location.origin,
     });
 
     toast.success("Opening LinkedIn — post caption copied to clipboard!");

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useReducedMotion, type Variants } from "framer-motion";
 
 const EASE_STANDARD: [number, number, number, number] = [0.16, 1, 0.3, 1];
@@ -84,7 +84,7 @@ export function useDashboardMotion() {
 
 export function useAutoRefresh(enabled: boolean, intervalMs = DASHBOARD_REFRESH_INTERVAL_MS) {
   const [refreshTick, setRefreshTick] = useState(0);
-  const lastRefreshTimeRef = useState<{ current: number }>({ current: Date.now() })[0];
+  const lastRefreshTimeRef = useRef(0);
 
   const triggerRefresh = useCallback(() => {
     const now = Date.now();

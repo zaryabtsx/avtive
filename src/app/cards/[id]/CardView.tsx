@@ -76,13 +76,19 @@ export default function CardView({
   }, [card.eventId, impersonateId]);
 
   useEffect(() => {
+    let isCancelled = false;
     try {
       const saved = window.localStorage.getItem("cardViewMode");
       if ((saved === "horizontal" || saved === "vertical") && saved !== viewMode) {
-        setViewMode(saved);
+        queueMicrotask(() => {
+          if (!isCancelled) setViewMode(saved);
+        });
       }
     } catch {
     }
+    return () => {
+      isCancelled = true;
+    };
   }, [viewMode]);
 
   const changeViewMode = (mode: "horizontal" | "vertical") => {
@@ -98,9 +104,12 @@ export default function CardView({
   };
 
   useEffect(() => {
-    setHorizontalPreviewFailed(false);
-    setVerticalFrontPreviewFailed(false);
-    setVerticalBackPreviewFailed(false);
+    const frame = window.requestAnimationFrame(() => {
+      setHorizontalPreviewFailed(false);
+      setVerticalFrontPreviewFailed(false);
+      setVerticalBackPreviewFailed(false);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [card.id, horizontalPreviewUrl, verticalFrontPreviewUrl, verticalBackPreviewUrl]);
 
   const getHorizontalExports = async () => {

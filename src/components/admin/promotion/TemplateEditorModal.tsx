@@ -91,6 +91,7 @@ export function TemplateEditorModal({
   const previewContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let frame: number | undefined;
     if (template) {
       let initialData: ChannelEditorState = {
         subject: template.subject || "",
@@ -117,8 +118,11 @@ export function TemplateEditorModal({
         }
       } catch {}
 
-      setForm(initialData);
+      frame = window.requestAnimationFrame(() => setForm(initialData));
     }
+    return () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+    };
   }, [template, eventId, channel]);
 
   const handleSave = () => {

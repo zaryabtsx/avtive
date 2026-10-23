@@ -507,7 +507,7 @@ function DashboardContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- bootstrap on auth/URL gate; fetchData intentionally omitted to avoid loops
   }, [router, impersonateId, onboardingIntent, sessionUserId, userId, refreshTick, isInternalUserLoading]);
 
-  const fetchData = async (targetUserId?: string, getIsMounted?: () => boolean) => {
+  async function fetchData(targetUserId?: string, getIsMounted?: () => boolean) {
     try {
       const cleanUserId = (targetUserId && targetUserId !== "undefined" && targetUserId !== "null")
         ? targetUserId
@@ -554,7 +554,7 @@ function DashboardContent() {
       setTopRoles([]);
       toast.error("Could not load data. Please refresh and try again.");
     }
-  };
+  }
 
   const markOwnerOnboardingCompleted = async () => {
     setIsSavingOwnerOnboarding(true);
@@ -959,7 +959,6 @@ function DashboardContent() {
 
   useEffect(() => {
     if (!isOrgAdminMode) {
-      setOrgMemberCount(0);
       return;
     }
     let isMounted = true;
@@ -1456,7 +1455,7 @@ function DashboardContent() {
                 {[
                   { label: "Total Campaigns", value: stats.totalEvents },
                   { label: "Total Leads", value: stats.totalAttendees },
-                  { label: "Organization Members", value: orgMemberCount },
+                  { label: "Organization Members", value: isOrgAdminMode ? orgMemberCount : 0 },
                   { label: "Avg / Campaign", value: ownerAvgAttendees },
                   { label: "Highest Campaign Reach", value: ownerTopCampaigns[0]?.attendeeCount || 0 },
                 ].map((kpi, kpiIdx) => (

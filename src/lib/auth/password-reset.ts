@@ -15,6 +15,13 @@ const RESET_TOKEN_EXPIRY_MINUTES = 15;
 /** TTL for failed-attempt Redis keys — slightly longer than OTP expiry */
 const FAILED_ATTEMPTS_TTL_SECONDS = OTP_EXPIRY_MINUTES * 60 + 60;
 
+type AdminApiWithGetUserByEmail = {
+  getUserByEmail?: (email: string) => Promise<{
+    data: { user: { id: string; email?: string } | null } | null;
+    error: unknown;
+  }>;
+};
+
 const ARGON2_OPTIONS = {
   memoryCost: 19456,
   timeCost: 2,
@@ -116,8 +123,9 @@ export async function requestPasswordResetCode(email: string): Promise<{
     if (supabase) {
       try {
         // Use getUserByEmail instead of listUsers() to avoid O(n) full scan
-        const { data: sbUserData, error: sbErr } = await (supabase.auth.admin as any).getUserByEmail
-          ? (supabase.auth.admin as any).getUserByEmail(normalized)
+        const adminApi = supabase.auth.admin as typeof supabase.auth.admin & AdminApiWithGetUserByEmail;
+        const { data: sbUserData, error: sbErr } = await adminApi.getUserByEmail
+          ? await adminApi.getUserByEmail(normalized)
           : supabase.auth.admin.listUsers().then(({ data, error }: { data: { users: Array<{ id: string; email?: string }> } | null; error: unknown }) => ({
               data: { user: data?.users?.find((u: { id: string; email?: string }) => u.email?.toLowerCase() === normalized) },
               error,
@@ -399,7 +407,7 @@ export async function completePasswordReset(
     try {
       // Prefer getUserByEmail if available in the SDK version, fall back to filtered listUsers
       let supabaseUserId: string | undefined;
-      const adminApi = supabaseAdmin.auth.admin as any;
+      const adminApi = supabaseAdmin.auth.admin as typeof supabaseAdmin.auth.admin & AdminApiWithGetUserByEmail;
 
       if (typeof adminApi.getUserByEmail === "function") {
         const { data: sbUserData, error: sbErr } = await adminApi.getUserByEmail(user.email);
@@ -457,7 +465,10 @@ export async function completePasswordReset(
   if (process.env.NEON_AUTH_BASE_URL) {
     try {
       const { neonAuth } = await import("@/auth");
-      await (neonAuth as any).resetPassword?.({
+      const neonAuthWithResetPassword = neonAuth as typeof neonAuth & {
+        resetPassword?: (options: { token: string; newPassword: string }) => Promise<unknown>;
+      };
+      await neonAuthWithResetPassword.resetPassword?.({
         token,
         newPassword,
       });

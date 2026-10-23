@@ -43,16 +43,19 @@ const BREAKER_COOLDOWN_MS = 30000; // 30 seconds
 
 const originalGetSession = neonAuth.getSession.bind(neonAuth);
 
-(neonAuth as any).getSession = async function (...args: any[]) {
+type GetSession = typeof neonAuth.getSession;
+type GetSessionResult = Awaited<ReturnType<GetSession>>;
+
+neonAuth.getSession = async (...args: Parameters<GetSession>): Promise<GetSessionResult> => {
   const now = Date.now();
   if (now - lastFailureTime < BREAKER_COOLDOWN_MS) {
     return { data: null };
   }
 
   let timeoutId: NodeJS.Timeout | undefined;
-  const timeoutPromise = new Promise<{ data: null }>((resolve) => {
+  const timeoutPromise = new Promise<GetSessionResult>((resolve) => {
     timeoutId = setTimeout(() => {
-      resolve({ data: null });
+      resolve({ data: null } as GetSessionResult);
     }, 800);
   });
 
@@ -75,4 +78,3 @@ const originalGetSession = neonAuth.getSession.bind(neonAuth);
     throw err;
   }
 };
-

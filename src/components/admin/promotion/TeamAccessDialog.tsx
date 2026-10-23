@@ -25,7 +25,7 @@ export function TeamAccessDialog({ open, onOpenChange, eventId }: TeamAccessDial
   const storageKey = eventId ? `linq_promotion_team_access_${eventId}` : "linq_promotion_team_access";
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
+    const frame = window.requestAnimationFrame(() => {
       try {
         const stored = localStorage.getItem(storageKey);
         if (stored) {
@@ -37,7 +37,8 @@ export function TeamAccessDialog({ open, onOpenChange, eventId }: TeamAccessDial
       } catch {
         // Fallback to default
       }
-    }
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [open, storageKey]);
 
   const toggleRole = (roleId: string) => {

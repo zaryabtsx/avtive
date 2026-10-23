@@ -149,11 +149,13 @@ function NewCardForm() {
 
   // Pre-populate LinkedIn and social links from URL query parameters if provided
   useEffect(() => {
+    let isCancelled = false;
     const qLi = searchParams.get("linkedin") || searchParams.get("linkedinUrl") || searchParams.get("li");
+    let normalizedLinkedIn: string | undefined;
     if (qLi) {
       const res = validateAndNormalizeLinkedInUrl(qLi);
       if (res.valid && res.normalizedUrl) {
-        setForm((f) => ({ ...f, linkedin: res.normalizedUrl! }));
+        normalizedLinkedIn = res.normalizedUrl;
       }
     }
 
@@ -176,9 +178,18 @@ function NewCardForm() {
         }
       }
     });
-    if (Object.keys(qSocials).length > 0) {
-      setSocialLinks((prev) => ({ ...prev, ...qSocials }));
-    }
+    queueMicrotask(() => {
+      if (isCancelled) return;
+      if (normalizedLinkedIn) {
+        setForm((f) => ({ ...f, linkedin: normalizedLinkedIn }));
+      }
+      if (Object.keys(qSocials).length > 0) {
+        setSocialLinks((prev) => ({ ...prev, ...qSocials }));
+      }
+    });
+    return () => {
+      isCancelled = true;
+    };
   }, [searchParams]);
 
   const [showPrintPreview, setShowPrintPreview] = useState(false);

@@ -169,6 +169,7 @@ export function PromotionChannelSelect({
 
   // Load editor data when a template is selected
   useEffect(() => {
+    let frame: number | undefined;
     if (selectedTemplate) {
       let initialData: ChannelEditorState = {
         subject: selectedTemplate.subject || "",
@@ -196,8 +197,11 @@ export function PromotionChannelSelect({
         }
       } catch {}
 
-      setForm(initialData);
+      frame = window.requestAnimationFrame(() => setForm(initialData));
     }
+    return () => {
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+    };
   }, [selectedTemplate, eventId]);
 
   const handleSelectTemplate = (tpl: PromotionTemplate) => {
